@@ -1,4 +1,4 @@
-name: Appium Android CI (Gradle, fixed)
+name: Appium Android CI (manual SDK install, API 33)
 
 on:
   push:
@@ -9,6 +9,11 @@ jobs:
   appium-android:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      PATH: /usr/local/lib/android/sdk/platform-tools:/usr/local/lib/android/sdk/emulator:/usr/local/lib/android/sdk/cmdline-tools/latest/bin:${PATH}
 
     steps:
       # 1) 코드 체크아웃
@@ -35,7 +40,7 @@ jobs:
           appium driver install uiautomator2
           appium driver list --installed
 
-      # 4) Gradle 캐시(옵션이지만 추천)
+      # 4) Gradle 캐시(권장)
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -46,24 +51,86 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      # 5) Android SDK + 에뮬레이터 설치 (API 31 일관)
-      - name: Install Android SDK (API 31)
-        uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            cmdline-tools;latest
-            platform-tools
-            platforms;android-31
-            build-tools;31.0.0
-            emulator
-            system-images;android-31;google_apis;x86_64
+      # 5) Android cmdline-tools 수동 설치 + 필수 패키지 설치 (API 33)
+      - name: Install Android command line tools (manual)
+        run: |
+          set -e
+          sudo mkdir -p $ANDROID_HOME/cmdline-tools
+          sudo chown -R $USER:$USER $ANDROID_HOME
+          cd $ANDROID_HOME/cmdline-tools
+          # 구글 공식 cmdline-tools 최신 zip 다운로드
+          curl -sSL -o cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          mkdir -p latest
+          unzip -q cmdtools.zip -d latest
+          rm -f cmdtools.zip
 
-      - name: Accept SDK licenses
-        run: yes | sdkmanager --licenses
+          # sdkmanager 사용 전 PATH 확인
+          which sdkmanager || true
+          sdkmanager --version || true
 
-      # 6) 에뮬레이터 생성 & 부팅 (중복 제거, 31로 일관)
-      - name: Create & boot emulator (API 31)
+          # 라이선스 선승인
+          yes | sdkmanager --licenses
+
+          # 필수 패키지 설치 (API 33)
+          sdkmanager "platform-tools" \
+                     "platforms;android-33" \
+                     "build-tools;33.0.2" \
+                     "emulator" \
+                     "system-images;android-33;google_apis;x86_64"
+
+      # 6) 에뮬레이터 생성 & 부팅 (API 33와 일치)
+      - name: Create & boot emulator (API 33)
         shell: bash
         run: |
-          echo "no" | avdmanager create avd -n test -k "system-images;android-31;google_apis;x86_64" --device "pixel"
+          set -e
+          echo "no" | avdmanager create avd -n test -k "system-images;android-33;google_apis;x86_64" --device "pixel"
           $ANDROID_HOME/emulator/emulator -list-avds
+          nohup $ANDROID_HOME/emulator/emulator -avd test -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -no-window > emulator.log 2>&1 &
+          adb wait-for-device
+          # 부팅 완료 대기 (최대 5분)
+          bootcomplete=""
+          timeout=0
+          while [ -z "$bootcomplete" ] && [ $timeout -lt 300 ]; do
+            sleep 5
+            bootcomplete=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            echo "boot_completed=$bootcomplete (t=$timeout)"
+            timeout=$((timeout+5))
+          done
+          adb devices -l
+          adb shell input keyevent 82 || true
+
+      # 7) Appium 서버 기동 + 포트 준비 대기
+      - name: Start Appium server
+        run: |
+          nohup appium --base-path /wd/hub > appium.log 2>&1 &
+          # 4723 포트 오픈 대기(최대 60초)
+          for i in {1..30}; do
+            nc -z 127.0.0.1 4723 && echo "Appium is up" && break
+            sleep 2
+          done
+          # 헬스 체크 (옵션)
+          curl -s http://127.0.0.1:4723/wd/hub/status || true
+
+      # 8) Gradle 실행 권한
+      - name: Grant Gradle permission
+        run: chmod +x ./gradlew
+
+      # 9) (선택) APK 빌드가 필요하다면 해제
+      # - name: Build APK (optional)
+      #   run: ./gradlew assembleDebug --stacktrace
+
+      # 10) 테스트 실행
+      - name: Run Tests
+        run: ./gradlew test --stacktrace --info
+
+      # 11) 아티팩트 업로드 (항상)
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-artifacts
+          path: |
+            **/build/test-results/test/*.xml
+            **/build/reports/tests/test/**
+            appium.log
+            emulator.log
