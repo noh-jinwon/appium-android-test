@@ -1,5 +1,5 @@
 
-ame: Appium Android CI
+name: Appium Android CI
 
 on:
   push:
