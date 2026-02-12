@@ -40,10 +40,27 @@ jobs:
             platforms;android-30
             build-tools;30.0.3
             emulator
-            system-images;android-30;google_apis;x86_64
+            system-images;android-31;google_apis;x86_64
             
       - name: Accept licenses
         run: yes | sdkmanager --licenses
+
+
+      - name: Create & boot emulator (API 31)
+        run: |
+          echo "no" | avdmanager create avd -n test -k "system-images;android-31;google_apis;x86_64" --device "pixel"
+          nohup $ANDROID_HOME/emulator/emulator -avd test -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -no-window > emulator.log 2>&1 &
+          adb wait-for-device
+          bootcomplete=""
+          timeout=0
+          while [ -z "$bootcomplete" ] && [ $timeout -lt 300 ]; do
+            sleep 5
+            bootcomplete=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            echo "boot_completed=$bootcomplete (t=$timeout)"
+            timeout=$((timeout+5))
+          done
+          adb devices -l
+          adb shell input keyevent 82 || true
 
 
       - name: Start Android Emulator
