@@ -30,15 +30,21 @@ jobs:
           npm install -g appium
           appium driver install uiautomator2
 
+
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: |
+            cmdline-tools;latest
             platform-tools
             platforms;android-30
             build-tools;30.0.3
             emulator
             system-images;android-30;google_apis;x86_64
+            
+      - name: Accept licenses
+        run: yes | sdkmanager --licenses
+
 
       - name: Start Android Emulator
         run: |
