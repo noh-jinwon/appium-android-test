@@ -50,18 +50,20 @@ jobs:
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           script: |
-            # Appium 서버 기동
-            nohup appium --base-path /wd/hub > appium.log 2>&1 &
-
-            # 포트 확인 (POSIX 호환)
-            for i in $(seq 1 30); do
-              nc -z 127.0.0.1 4723 && echo "Appium is up" && break
-              sleep 2
-            done
-
-            # Gradle 테스트
-            chmod +x ./gradlew
-            ./gradlew test --stacktrace --info
+            bash << 'EOF'
+              echo "[INFO] Starting Appium server..."
+              nohup appium --base-path /wd/hub > appium.log 2>&1 &
+      
+              echo "[INFO] Waiting for Appium port 4723..."
+              for i in $(seq 1 30); do
+                nc -z 127.0.0.1 4723 && echo "[INFO] Appium is up" && break
+                sleep 2
+              done
+      
+              echo "[INFO] Running Gradle tests..."
+              chmod +x ./gradlew
+              ./gradlew test --stacktrace --info
+            EOF
 
       - name: Upload artifacts
         if: always()
