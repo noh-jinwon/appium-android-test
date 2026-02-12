@@ -1,18 +1,26 @@
 #Jira 접속정보
+#URL = https://(여기부분).atlassian.net(Brower URL)
 JIRA_BASE_URL=https://your-domain.atlassian.net
 JIRA_DEPLOYMENT=cloud
 
+#사용중인 Email
 JIRA_EMAIL=you@company.com
+#https://id.atlassian.com/manage-profile/security/api-tokens(토큰 생성 및 복사, 토큰은 최대 1년동안 사용 가능)
 JIRA_API_TOKEN=여기에_토큰
 
+#이슈 넘버 앞 프로젝트 키
 JIRA_PROJECT_KEY=QA
-JIRA_ISSUE_TYPE=Bug
+#Type = 지라 내 영어면 영어, 한글이면 한글, 무조건 똑같아야 함
+JIRA_ISSUE_TYPE=버그
 
 JIRA_CREATE_ON_FAIL=1
 JIRA_DUPLICATE_STRATEGY=reuse_open
 
 JIRA_LABELS=ui-test,appium,pytest,android
-JIRA_COMPONENTS=Mobile,Android
+
+#컴포넌트는 현재 지라 내 없음(setting - 기능에서도 X)
+#JIRA_COMPONENTS=Mobile,Android
+
 JIRA_PRIORITY=High
 
 APPIUM_LOG_PATH=artifacts/appium_server.log
@@ -263,3 +271,121 @@ def create_or_update_issue(
 
     _attach_files(cfg, issue_key, artifacts)
     return issue_key
+
+
+# pytest 실패 감지 훅 파일 만들기
+# conftest.py
+from __future__ import annotations
+
+from datetime import datetime
+
+import pytest
+
+from utils.jira_reporter import (
+    ARTIFACT_DIR,
+    collect_logcat,
+    create_or_update_issue,
+    load_config,
+    safe_filename,
+    try_copy,
+)
+
+
+def _find_appium_driver(funcargs: dict):
+    # fixture 이름이 driver가 아니어도 자동 탐색
+    for v in funcargs.values():
+        if hasattr(v, "get_screenshot_as_file") and hasattr(v, "page_source"):
+            return v
+    return None
+
+
+def _env_text_from_driver(driver) -> str:
+    lines = [
+        "- Platform: Android",
+        "- Framework: Appium + pytest",
+    ]
+    try:
+        caps = getattr(driver, "capabilities", {}) or {}
+        if caps:
+            lines.append(f"- deviceName: {caps.get('deviceName')}")
+            lines.append(f"- platformVersion: {caps.get('platformVersion')}")
+            lines.append(f"- appPackage: {caps.get('appPackage')}")
+            lines.append(f"- appActivity: {caps.get('appActivity')}")
+    except Exception:
+        pass
+    return "\n".join([x for x in lines if x and not x.endswith(": None")])
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    rep = outcome.get_result()
+
+    # setup/call 둘 다 실패 잡기
+    if rep.when not in ("setup", "call") or not rep.failed:
+        return
+
+    try:
+        cfg = load_config()
+        if not cfg.create_on_fail:
+            return
+    except Exception:
+        # .env가 없거나 설정이 없으면 Jira 연동 스킵
+        return
+
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+
+    test_nodeid = item.nodeid
+    test_name = safe_filename(item.name)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    prefix = f"{test_name}__{stamp}"
+
+    driver = _find_appium_driver(getattr(item, "funcargs", {}) or {})
+    artifacts = []
+
+    # (1) 스크린샷 / 페이지소스 (Appium driver 있을 때만)
+    if driver:
+        try:
+            png = ARTIFACT_DIR / f"{prefix}.png"
+            driver.get_screenshot_as_file(str(png))
+            artifacts.append(png)
+        except Exception:
+            pass
+
+        try:
+            xml = ARTIFACT_DIR / f"{prefix}.xml"
+            xml.write_text(driver.page_source, encoding="utf-8", errors="ignore")
+            artifacts.append(xml)
+        except Exception:
+            pass
+
+    # (2) logcat
+    logcat = ARTIFACT_DIR / f"{prefix}_logcat.txt"
+    collect_logcat(logcat, tail_lines=2000)
+    artifacts.append(logcat)
+
+    # (3) 선택 로그 파일 스냅샷
+    appium_snap = try_copy(cfg.appium_log_path, ARTIFACT_DIR / f"{prefix}_appium.log")
+    if appium_snap:
+        artifacts.append(appium_snap)
+
+    install_snap = try_copy(cfg.install_log_path, ARTIFACT_DIR / f"{prefix}_install.log")
+    if install_snap:
+        artifacts.append(install_snap)
+
+    env_text = _env_text_from_driver(driver) if driver else "- Platform: Android\n- Framework: pytest\n"
+    error_text = rep.longreprtext
+
+    try:
+        issue_key = create_or_update_issue(
+            cfg=cfg,
+            test_nodeid=test_nodeid,
+            test_name=item.name,
+            when=rep.when,
+            error_text=error_text,
+            env_text=env_text,
+            artifacts=artifacts,
+        )
+        print(f"\n[JIRA] 이슈 생성/연결 완료: {issue_key}\n")
+    except Exception as e:
+        print(f"\n[JIRA] 생성 실패: {e}\n")
