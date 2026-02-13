@@ -52,18 +52,19 @@ jobs:
           script: |
             bash -lc 'set -euo pipefail; \
               echo "[INFO] Starting Appium server..."; \
-              # base-path 제거
+              # base-path 제거: 테스트 코드가 http://127.0.0.1:4723 를 쓰므로 일치시킵니다.
               nohup appium > appium.log 2>&1 &; \
               echo "[INFO] Waiting for Appium port 4723..."; \
               for i in $(seq 1 30); do \
                 if nc -z 127.0.0.1 4723; then echo "[INFO] Appium is up"; break; fi; \
                 sleep 2; \
               done; \
-              echo "[INFO] Health check"; \
-              curl -s http://127.0.0.1:4723/status || true; \
+              echo "[INFO] Optional: quick adb check (non-fatal)"; \
+              set +e; adb devices -l || true; set -e; \
               echo "[INFO] Running Gradle tests..."; \
               chmod +x ./gradlew; \
-              ./gradlew test --stacktrace --info'
+              ./gradlew test --stacktrace --info; \
+              echo \"[INFO] Tests finished. Avoiding extra adb calls to prevent race during teardown.\"'
 
       - name: Upload artifacts
         if: always()
