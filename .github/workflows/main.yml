@@ -50,25 +50,17 @@ jobs:
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           script: |
-            bash << 'EOF'
-              set -euo pipefail
-
-              echo "[INFO] Starting Appium server..."
-              nohup appium --base-path /wd/hub > appium.log 2>&1 &
-
-              echo "[INFO] Waiting for Appium port 4723..."
-              for i in $(seq 1 30); do
-                if nc -z 127.0.0.1 4723; then
-                  echo "[INFO] Appium is up"
-                  break
-                fi
-                sleep 2
-              done
-
-              echo "[INFO] Running Gradle tests..."
-              chmod +x ./gradlew
-              ./gradlew test --stacktrace --info
-            EOF
+            bash -lc 'set -euo pipefail; \
+              echo "[INFO] Starting Appium server..."; \
+              nohup appium --base-path /wd/hub > appium.log 2>&1 &; \
+              echo "[INFO] Waiting for Appium port 4723..."; \
+              for i in $(seq 1 30); do \
+                if nc -z 127.0.0.1 4723; then echo "[INFO] Appium is up"; break; fi; \
+                sleep 2; \
+              done; \
+              echo "[INFO] Running Gradle tests..."; \
+              chmod +x ./gradlew; \
+              ./gradlew test --stacktrace --info'
 
       - name: Upload artifacts
         if: always()
