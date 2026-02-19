@@ -122,7 +122,6 @@ jobs:
             -d "{\"client_id\": \"${XRAY_CLIENT_ID}\", \"client_secret\": \"${XRAY_CLIENT_SECRET}\"}")"
           echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
       
-      # (2) JUnit 결과 업로드(표준). 여러 XML이면 루프 처리
       - name: Upload JUnit to Xray (Cloud v2)
         if: always()
         shell: bash
@@ -130,10 +129,32 @@ jobs:
           XRAY_TOKEN: ${{ steps.xray-auth.outputs.token }}
         run: |
           set -euo pipefail
-          # 업로드 대상: build/test-results/test/*.xml
-          for f in build/test-results/test/*.xml; do
+      
+          # 0) 어디에 리포트가 생겼는지 진단 출력
+          echo "== Gradle reports =="
+          ls -alh build/test-results/test || true
+          ls -alh */build/test-results/test || true
+      
+          # 1) XML 수집 (루트/하위 모듈 모두 포함)
+          mapfile -t FILES < <(find . -type f -path "*/build/test-results/test/*.xml")
+      
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "::warning::No JUnit XML found under */build/test-results/test/*.xml . Did tests run?"
+            echo "Tip) check your module path or Gradle task. For a multi-module project run : ./gradlew clean test"
+            exit 0  # 결과 없으면 업로드 스킵(실패 아님)
+          fi
+      
+          # 2) (옵션) zip으로 묶어 한 번에 업로드하려면 아래 주석 해제
+          # zip -q -j xray-junit.zip "${FILES[@]}"
+          # curl -s -X POST "https://xray.cloud.getxray.app/api/v2/import/execution/junit/multipart?projectKey=PROJ&testEnvironments=android-emul" \
+          #   -H "Authorization: Bearer ${XRAY_TOKEN}" \
+          #   -H "Content-Type: multipart/form-data" \
+          #   -F "file=@xray-junit.zip"
+      
+          # 3) 표준 엔드포인트로 개별 업로드
+          for f in "${FILES[@]}"; do
             echo "Uploading $f"
-            curl -s -X POST "https://xray.cloud.getxray.app/api/v2/import/execution/junit?projectKey=PROJ&testPlanKey=PROJ-456&testEnvironments=android-emul" \
+            curl -s -f -X POST "https://xray.cloud.getxray.app/api/v2/import/execution/junit?projectKey=PROJ&testEnvironments=android-emul" \
               -H "Authorization: Bearer ${XRAY_TOKEN}" \
               -H "Content-Type: multipart/form-data" \
               -F "file=@${f}"
