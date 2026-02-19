@@ -130,28 +130,26 @@ jobs:
         run: |
           set -euo pipefail
       
-          # 0) 어디에 리포트가 생겼는지 진단 출력
-          echo "== Gradle reports =="
-          ls -alh build/test-results/test || true
-          ls -alh */build/test-results/test || true
+          echo "== Collecting JUnit XML files =="
+          # 1) Unit test (Gradle 'test') 표준 경로(루트 + 모든 하위 모듈)
+          mapfile -t FILES_UT < <(find . -type f -path "*/build/test-results/test/*.xml")
       
-          # 1) XML 수집 (루트/하위 모듈 모두 포함)
-          mapfile -t FILES < <(find . -type f -path "*/build/test-results/test/*.xml")
+          # 2) Connected test (AGP 7+ 표준)
+          mapfile -t FILES_CT1 < <(find . -type f -path "*/build/outputs/androidTest-results/connected/*.xml")
+          # 3) Connected test (과거/기타 경로 후보)
+          mapfile -t FILES_CT2 < <(find . -type f -path "*/build/connected/androidTest-results/*.xml")
+          mapfile -t FILES_CT3 < <(find . -type f -path "*/build/reports/androidTests/connected/*.xml")
       
+          FILES=( "${FILES_UT[@]}" "${FILES_CT1[@]}" "${FILES_CT2[@]}" "${FILES_CT3[@]}" )
+      
+          echo "Found ${#FILES[@]} xml files"
           if [ ${#FILES[@]} -eq 0 ]; then
-            echo "::warning::No JUnit XML found under */build/test-results/test/*.xml . Did tests run?"
-            echo "Tip) check your module path or Gradle task. For a multi-module project run : ./gradlew clean test"
-            exit 0  # 결과 없으면 업로드 스킵(실패 아님)
+            echo "::warning::No JUnit XML found in common locations."
+            echo "Tip) 위에서 찍힌 Probe 출력으로 실제 경로를 확인한 뒤 -path 패턴을 그 경로에 맞춰 수정하세요."
+            exit 0  # 업로드만 스킵(파이프라인 실패 X) — 원하면 exit 1로 바꿔도 됨
           fi
       
-          # 2) (옵션) zip으로 묶어 한 번에 업로드하려면 아래 주석 해제
-          # zip -q -j xray-junit.zip "${FILES[@]}"
-          # curl -s -X POST "https://xray.cloud.getxray.app/api/v2/import/execution/junit/multipart?projectKey=PROJ&testEnvironments=android-emul" \
-          #   -H "Authorization: Bearer ${XRAY_TOKEN}" \
-          #   -H "Content-Type: multipart/form-data" \
-          #   -F "file=@xray-junit.zip"
-      
-          # 3) 표준 엔드포인트로 개별 업로드
+          # (선택1) 모든 파일을 개별 업로드
           for f in "${FILES[@]}"; do
             echo "Uploading $f"
             curl -s -f -X POST "https://xray.cloud.getxray.app/api/v2/import/execution/junit?projectKey=PROJ&testEnvironments=android-emul" \
@@ -160,3 +158,10 @@ jobs:
               -F "file=@${f}"
             echo ""
           done
+      
+          # (선택2) 한 번에 zip 업로드를 원하면 위 for문을 주석 처리하고 아래 사용:
+          # zip -q -j xray-junit.zip "${FILES[@]}"
+          # curl -s -f -X POST "https://xray.cloud.getxray.app/api/v2/import/execution/junit/multipart?projectKey=PROJ&testEnvironments=android-emul" \
+          #   -H "Authorization: Bearer ${XRAY_TOKEN}" \
+          #   -H "Content-Type: multipart/form-data" \
+          #   -F "file=@xray-junit.zip"
