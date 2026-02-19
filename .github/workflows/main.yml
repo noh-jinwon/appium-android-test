@@ -122,24 +122,6 @@ jobs:
             -d "{\"client_id\": \"${XRAY_CLIENT_ID}\", \"client_secret\": \"${XRAY_CLIENT_SECRET}\"}")"
           echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
 
-
-        echo "== Probe: Gradle UnitTest (JUnit XML) =="
-        # 표준 단일모듈
-        ls -alh build/test-results/test 2>/dev/null || true
-        # 하위 모듈들
-        ls -alh */build/test-results/test 2>/dev/null || true
-        
-        echo "== Probe: Android connectedTest (adb/emulator 대상) =="
-        # AGP 7+ 에서 연결 테스트(connectedAndroidTest) 기본 위치
-        ls -alh */build/outputs/androidTest-results/connected 2>/dev/null || true
-        ls -alh build/outputs/androidTest-results/connected 2>/dev/null || true
-        # 과거/기타 위치들
-        ls -alh */build/connected/androidTest-results 2>/dev/null || true
-        ls -alh */build/reports/androidTests/connected 2>/dev/null || true
-        
-        echo "== Probe: Top 200 *.xml candidates (빠르게) =="
-        find . -type f -name "*.xml" | sed -n '1,200p'
-
       
       - name: Upload JUnit to Xray (Cloud v2)
         if: always()
@@ -151,10 +133,10 @@ jobs:
       
           echo "== Collecting JUnit XML files =="
           # 1) Unit test (Gradle 'test') 표준 경로(루트 + 모든 하위 모듈)
-          mapfile -t FILES_UT < <(find . -type f -path "*/build/test-results/test/*.xml")
+          mapfile -t FILES_UT < <(find . -type f -path "C:\work\appium-sample\build\test-results\test\TEST-com.example.appium.BasicAppiumTest.xml")
       
           # 2) Connected test (AGP 7+ 표준)
-          mapfile -t FILES_CT1 < <(find . -type f -path "*/build/outputs/androidTest-results/connected/*.xml")
+          mapfile -t FILES_CT1 < <(find . -type f -path "/build/outputs/androidTest-results/connected/*.xml")
           # 3) Connected test (과거/기타 경로 후보)
           mapfile -t FILES_CT2 < <(find . -type f -path "*/build/connected/androidTest-results/*.xml")
           mapfile -t FILES_CT3 < <(find . -type f -path "*/build/reports/androidTests/connected/*.xml")
