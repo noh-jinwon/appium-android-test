@@ -22,7 +22,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # 3) Node (최근 버전) - Appium 2 설치를 위해
+      # 3) Node (Appium 2 설치용)
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -32,14 +32,14 @@ jobs:
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
 
-      # 5) 에뮬레이터 기동 + 스크립트 내에서 Appium/Gradle 테스트 실행
+      # 5) 에뮬레이터 기동 + 같은 스텝의 script에서 Appium/Gradle 테스트 실행
       - name: Start emulator & run tests
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
-          api-level: 30               # 네가 성공했던 API 레벨 그대로 사용
+          api-level: 30               # 성공했던 API 레벨 유지
           target: google_apis         # PlayStore 미포함
           arch: x86_64
-          profile: pixel_4            # 원하면 변경 가능(선택)
+          profile: pixel_4            # 선택 사항
           disable-animations: true
           emulator-options: >-
             -no-window -gpu swiftshader_indirect
@@ -47,35 +47,46 @@ jobs:
           script: |
             set -euxo pipefail
 
-            # (선택) adb 상태 확인
-            adb devices
+            # (A) 부팅 최종 확인: sys.boot_completed = 1
+            adb wait-for-device
+            until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do
+              sleep 2
+            done
+            adb shell input keyevent 82 || true
 
-            # Appium 2 설치 + 드라이버
+            # (B) 애니메이션 OFF - settings 서비스가 늦게 뜨는 경우가 있어 짧게 재시도
+            for k in window_animation_scale transition_animation_scale animator_duration_scale; do
+              n=0
+              until adb shell settings put global "$k" 0.0 >/dev/null 2>&1 || [ $n -ge 5 ]; do
+                n=$((n+1)); sleep 1
+              done
+            done
+            # 화면 항상 켜짐(전원 연결 시) - 실패해도 빌드 영향 없도록
+            adb shell settings put global stay_on_while_plugged_in 3 || true
+
+            # (C) Appium 2 + uiautomator2 설치 및 서버 기동
             npm install -g appium@next
             appium driver install uiautomator2
-
-            # Appium 서버 백그라운드 기동 (기본 포트 4723)
             nohup appium > appium.log 2>&1 &
 
-            # Gradle 실행 권한
+            # (D) Gradle 실행 권한 및 버전 확인(선택)
             chmod +x ./gradlew
-
-            # (선택) JDK/ADB/Node 확인
             java -version || true
             adb --version || true
             node -v || true
             npm -v || true
 
-            # 특정 테스트만 실행 (로그 파일 저장)
-            ./gradlew clean test --tests "com.example.appium.BasicAppiumTest_emul" --stacktrace | tee gradle.log
+            # (E) 특정 테스트 클래스만 실행
+            ./gradlew clean test \
+              --tests "com.example.appium.BasicAppiumTest_emul" \
+              --stacktrace | tee gradle.log
 
-            # 로그/리포트 수집 (작업공간에 남겨둠 → 다음 스텝에서 업로드)
+            # (F) 로그/리포트 수집 (아티팩트로 올릴 파일만 정리)
             mkdir -p ci-logs
             cp -f gradle.log ci-logs/gradle.log || true
             cp -f appium.log ci-logs/appium.log || true
             adb logcat -d > ci-logs/logcat.txt || true
             adb shell getprop > ci-logs/getprop.txt || true
-
             if [ -d "build/reports/tests/test" ]; then
               tar -czf ci-logs/test-report.tgz build/reports/tests/test
             fi
