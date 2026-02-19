@@ -131,26 +131,24 @@ jobs:
         run: |
           set -euo pipefail
       
-          echo "== Collecting JUnit XML files =="
-          # 1) Unit test (Gradle 'test') 표준 경로(루트 + 모든 하위 모듈)
-          mapfile -t FILES_UT < <(find . -type f -path "C:\work\appium-sample\build\test-results\test\TEST-com.example.appium.BasicAppiumTest.xml")
+          echo "== Probe (common locations) =="
+          ls -alh ./build/test-results/test 2>/dev/null || true
+          ls -alh ./*/build/test-results/test 2>/dev/null || true
       
-          # 2) Connected test (AGP 7+ 표준)
-          mapfile -t FILES_CT1 < <(find . -type f -path "/build/outputs/androidTest-results/connected/*.xml")
-          # 3) Connected test (과거/기타 경로 후보)
-          mapfile -t FILES_CT2 < <(find . -type f -path "*/build/connected/androidTest-results/*.xml")
-          mapfile -t FILES_CT3 < <(find . -type f -path "*/build/reports/androidTests/connected/*.xml")
+          echo "== Collect JUnit XML =="
+          # Unit test (Gradle 'test') 기본
+          mapfile -t FILES_UT < <(find . -type f -path "*/build/test-results/test/*.xml")
+          # Android connected (여분 후보가 있으면 여기에 더 추가 가능)
+          # mapfile -t FILES_CT < <(find . -type f -path "*/build/outputs/androidTest-results/connected/*.xml")
       
-          FILES=( "${FILES_UT[@]}" "${FILES_CT1[@]}" "${FILES_CT2[@]}" "${FILES_CT3[@]}" )
+          FILES=( "${FILES_UT[@]}" ) # 필요시 "${FILES_CT[@]}" 추가
       
           echo "Found ${#FILES[@]} xml files"
           if [ ${#FILES[@]} -eq 0 ]; then
-            echo "::warning::No JUnit XML found in common locations."
-            echo "Tip) 위에서 찍힌 Probe 출력으로 실제 경로를 확인한 뒤 -path 패턴을 그 경로에 맞춰 수정하세요."
-            exit 0  # 업로드만 스킵(파이프라인 실패 X) — 원하면 exit 1로 바꿔도 됨
+            echo "::warning::No JUnit XML found. Check the module path and Gradle tasks."
+            exit 0
           fi
       
-          # (선택1) 모든 파일을 개별 업로드
           for f in "${FILES[@]}"; do
             echo "Uploading $f"
             curl -s -f -X POST "https://xray.cloud.getxray.app/api/v2/import/execution/junit?projectKey=PROJ&testEnvironments=android-emul" \
@@ -159,10 +157,3 @@ jobs:
               -F "file=@${f}"
             echo ""
           done
-      
-          # (선택2) 한 번에 zip 업로드를 원하면 위 for문을 주석 처리하고 아래 사용:
-          # zip -q -j xray-junit.zip "${FILES[@]}"
-          # curl -s -f -X POST "https://xray.cloud.getxray.app/api/v2/import/execution/junit/multipart?projectKey=PROJ&testEnvironments=android-emul" \
-          #   -H "Authorization: Bearer ${XRAY_TOKEN}" \
-          #   -H "Content-Type: multipart/form-data" \
-          #   -F "file=@xray-junit.zip"
