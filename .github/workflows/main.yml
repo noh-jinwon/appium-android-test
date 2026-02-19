@@ -107,3 +107,35 @@ jobs:
           name: logs-and-reports
           path: ci-logs
           if-no-files-found: warn
+
+      # (1) Xray Cloud 토큰 발급
+      - name: Get Xray token
+        id: xray-auth
+        shell: bash
+        env:
+          XRAY_CLIENT_ID: ${{ secrets.XRAY_CLIENT_ID }}
+          XRAY_CLIENT_SECRET: ${{ secrets.XRAY_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          TOKEN="$(curl -s -X POST "https://xray.cloud.getxray.app/api/v2/authenticate" \
+            -H "Content-Type: application/json" \
+            -d "{\"client_id\": \"${XRAY_CLIENT_ID}\", \"client_secret\": \"${XRAY_CLIENT_SECRET}\"}")"
+          echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+      
+      # (2) JUnit 결과 업로드(표준). 여러 XML이면 루프 처리
+      - name: Upload JUnit to Xray (Cloud v2)
+        if: always()
+        shell: bash
+        env:
+          XRAY_TOKEN: ${{ steps.xray-auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          # 업로드 대상: build/test-results/test/*.xml
+          for f in build/test-results/test/*.xml; do
+            echo "Uploading $f"
+            curl -s -X POST "https://xray.cloud.getxray.app/api/v2/import/execution/junit?projectKey=PROJ&testPlanKey=PROJ-456&testEnvironments=android-emul" \
+              -H "Authorization: Bearer ${XRAY_TOKEN}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "file=@${f}"
+            echo ""
+          done
