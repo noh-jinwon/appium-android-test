@@ -121,6 +121,25 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"client_id\": \"${XRAY_CLIENT_ID}\", \"client_secret\": \"${XRAY_CLIENT_SECRET}\"}")"
           echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+
+
+        echo "== Probe: Gradle UnitTest (JUnit XML) =="
+        # 표준 단일모듈
+        ls -alh build/test-results/test 2>/dev/null || true
+        # 하위 모듈들
+        ls -alh */build/test-results/test 2>/dev/null || true
+        
+        echo "== Probe: Android connectedTest (adb/emulator 대상) =="
+        # AGP 7+ 에서 연결 테스트(connectedAndroidTest) 기본 위치
+        ls -alh */build/outputs/androidTest-results/connected 2>/dev/null || true
+        ls -alh build/outputs/androidTest-results/connected 2>/dev/null || true
+        # 과거/기타 위치들
+        ls -alh */build/connected/androidTest-results 2>/dev/null || true
+        ls -alh */build/reports/androidTests/connected 2>/dev/null || true
+        
+        echo "== Probe: Top 200 *.xml candidates (빠르게) =="
+        find . -type f -name "*.xml" | sed -n '1,200p'
+
       
       - name: Upload JUnit to Xray (Cloud v2)
         if: always()
