@@ -24,10 +24,10 @@ public class BasicAppiumTest {
         UiAutomator2Options opts = new UiAutomator2Options()
                 .setPlatformName("Android")
                 .setAutomationName("UiAutomator2")
-                .setDeviceName("R3CTC033HBW")         // 실제 기기면 적절히 수정
-                .setAppPackage("com.cureloop.mobile")
-                .setAppActivity("com.cureloop.mobile/.MainActivity")
-                .amend("newCommandTimeout", 120);
+                .setDeviceName("Android Emulator")         // 실제 기기면 적절히 수정
+       		.amend("noReset", true)
+       		.amend("dontStopAppOnReset", true);
+
 
         driver = new AndroidDriver(new URL("http://127.0.0.1:4723"), opts);
         driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(2)); // 짧게
