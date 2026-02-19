@@ -1,55 +1,142 @@
-name: Android Appium CI (hard-timeout-5m)
+name: Android Appium CI (stable-7m-timeout)
 
 on:
   push:
     branches: [ main ]
   pull_request:
 
-# .github/workflows/android-appium-ci.yml (핵심부만 교체)
-
 jobs:
   appium-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 30   # 전체 잡 타임아웃
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      # 1) 코드 체크아웃
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2) JDK 17
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      # 3) Android SDK 설치
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
 
-      # <<< 여기 한 스텝으로 에뮬레이터 준비 완료
-      - name: Start emulator via action (API 30, 5m timeout in script)
-        uses: ReactiveCircus/android-emulator-runner@v2
-        with:
-          api-level: 30
-          target: google_apis
-          arch: x86_64
-          emulator-options: "-no-window -gpu swiftshader_indirect -no-snapshot -no-audio -no-boot-anim"
-          script: |
-            # 5분 내 완전부팅 보장: sys.boot_completed=1 대기
-            timeout 300 bash -c 'adb wait-for-device; \
-              until [[ "$(adb shell getprop sys.boot_completed | tr -d "\r")" == "1" ]]; do sleep 2; done'
-            # 안정화
+      # 4) 에뮬레이터 시스템 이미지 설치 (Play Store 미포함 google_apis / x86_64)
+      - name: Install SDK packages
+        run: |
+          sdkmanager --install "platform-tools" "platforms;android-30" "emulator" \
+            "system-images;android-30;google_apis;x86_64"
+
+      # 5) AVD 생성
+      - name: Create AVD
+        run: |
+          echo "no" | avdmanager create avd -n test -k "system-images;android-30;google_apis;x86_64"
+
+      # 6) 에뮬레이터 실행 (헤드리스 + SwiftShader)
+      - name: Start emulator (headless)
+        run: |
+          nohup $ANDROID_HOME/emulator/emulator-headless -avd test \
+            -no-window -no-audio -no-boot-anim -no-snapshot \
+            -gpu swiftshader_indirect \
+            -verbose > emulator.log 2>&1 &
+          echo $! > emulator.pid
+          # 참고: emulator-headless는 CI에서 UI/Qt 의존을 줄인 전용 바이너리라 헤드리스에서 안정적임 (Android Studio Release Notes).  # [3](https://docs.gradle.org.cn/current/userguide/directory_layout.html)
+
+      # 7) 부팅 완료 대기 (≤7분 하드 타임아웃)
+      - name: Wait for emulator (≤7m hard timeout)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! timeout --foreground -k 10s 420 bash -c '
+            adb kill-server || true
+            adb start-server
+            adb wait-for-device
+            # 완전 부팅 확인: sys.boot_completed == 1 이 표준  # [1](https://namepgb.tistory.com/219)[2](https://docs.huihoo.com/gradle/4.7/userguide/build_environment.html)
+            until [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" == "1" ]]; do
+              sleep 2
+            done
+            # 잠금 해제 & 애니메이션 OFF (안정화)
             adb shell input keyevent 82 || true
             adb shell settings put global window_animation_scale 0.0 || true
             adb shell settings put global transition_animation_scale 0.0 || true
             adb shell settings put global animator_duration_scale 0.0 || true
+            # 화면 항상 켜짐(전원 연결 시) 대체 설정
+            adb shell settings put global stay_on_while_plugged_in 3 || true
+          '; then
+            echo "::error::Emulator failed to boot within 420s. Killing emulator..."
+            if [ -f emulator.pid ]; then
+              kill -9 "$(cat emulator.pid)" 2>/dev/null || true
+            fi
+            pkill -9 -f "emulator.*-avd test" 2>/dev/null || true
+            exit 124
+          fi
 
-      # Appium / 테스트 실행은 그대로
+      # 8) Node + Appium + UiAutomator2
       - name: Install Node & Appium
         run: |
           sudo apt-get update
           sudo apt-get install -y nodejs npm
-          npm i -g appium@next
+          npm install -g appium@next
           appium driver install uiautomator2
+
+      # 9) Appium 서버 실행
+      - name: Start Appium server
+        run: |
           nohup appium > appium.log 2>&1 &
 
-      - name: Gradle
+      # 10) Gradle 권한
+      - name: Gradle permission
         run: chmod +x gradlew
 
+      # 11) 특정 테스트 클래스만 실행
       - name: Run only BasicAppiumTest_emul
-        run: ./gradlew clean test --tests "com.example.appium.BasicAppiumTest_emul" --stacktrace | tee gradle.log
+        run: |
+          ./gradlew clean test --tests "com.example.appium.BasicAppiumTest_emul" --stacktrace | tee gradle.log
+
+      # 12) 디버그 스냅샷(ADB/props) 수집
+      - name: Snapshot props & devices (debug)
+        if: always()
+        run: |
+          mkdir -p ci-logs
+          adb devices -l > ci-logs/adb-devices.txt 2>&1 || true
+          adb shell getprop > ci-logs/getprop.txt 2>&1 || true
+          adb shell getprop sys.boot_completed > ci-logs/prop-boot-completed.txt 2>&1 || true
+          adb shell getprop dev.bootcomplete > ci-logs/prop-dev-bootcomplete.txt 2>&1 || true
+
+      # 13) 로그/리포트 아티팩트 업로드 (항상)
+      - name: Collect & upload artifacts
+        if: always()
+        run: |
+          mkdir -p ci-logs
+          cp -f emulator.log ci-logs/emulator.log 2>/dev/null || true
+          cp -f appium.log ci-logs/appium.log 2>/dev/null || true
+          cp -f gradle.log ci-logs/gradle.log 2>/dev/null || true
+          adb logcat -d > ci-logs/logcat.txt 2>&1 || true
+          if [ -d "build/reports/tests/test" ]; then
+            tar -czf ci-logs/test-report.tgz build/reports/tests/test
+          fi
+          if [ -d "build/test-results/test" ]; then
+            tar -czf ci-logs/test-results.tgz build/test-results/test
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-and-reports
+          path: ci-logs
+          if-no-files-found: warn
+
+      # 14) 종료는 실패로 간주하지 않음 (best-effort)
+      - name: Terminate emulator (best-effort)
+        if: always()
+        continue-on-error: true
+        run: |
+          SERIAL="$(adb devices | awk '/emulator-/{print $1; exit}')"
+          if [ -n "$SERIAL" ]; then adb -s "$SERIAL" emu kill || true; fi
+          pkill -9 -f "emulator.*-avd test" || true
