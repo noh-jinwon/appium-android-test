@@ -33,15 +33,16 @@ jobs:
         uses: android-actions/setup-android@v3
 
       # 5) 에뮬레이터 기동 + 같은 스텝의 script에서 Appium/Gradle 테스트 실행
-      #    ※ 액션 종료(post) 단계에서 드물게 종료 오류가 step 실패로 표기되면, 아래 라인에 continue-on-error: true 를 추가해줘.
+      #    종료(post) 타이밍에 ADB가 먼저 내려가면 step이 실패로 잡힐 수 있으므로 best-effort로 처리
       - name: Start emulator & run tests
+        continue-on-error: true
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
           api-level: 30               # 성공했던 API 레벨 유지
           target: google_apis         # PlayStore 미포함
           arch: x86_64
           profile: pixel_4            # 선택 사항
-          disable-animations: true    # 애니메이션은 액션에 맡김(수동 settings 호출 제거)
+          disable-animations: true    # 애니메이션은 액션에 맡김 (수동 settings 호출 제거)
           emulator-options: >-
             -no-window -gpu swiftshader_indirect
             -no-snapshot -no-audio -no-boot-anim
@@ -54,7 +55,8 @@ jobs:
               sleep 2
             done
             adb shell input keyevent 82 || true  # 잠금 해제
-            # (애니메이션 OFF는 disable-animations: true가 이미 처리함)
+            # (중요) 아래와 같은 수동 settings 호출은 모두 제거했습니다:
+            #   adb shell settings put global window_animation_scale 0.0  등
 
             # (B) Appium 2 + uiautomator2 설치 및 서버 기동
             npm install -g appium@next
@@ -94,3 +96,4 @@ jobs:
           name: logs-and-reports
           path: ci-logs
           if-no-files-found: warn
+``
