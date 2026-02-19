@@ -1,4 +1,4 @@
-name: Android Appium CI (stable-5min-timeout)
+name: Android Appium CI (hard-timeout-5m)
 
 on:
   push:
@@ -8,93 +8,69 @@ on:
 jobs:
   appium-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30    # 전체 잡 타임아웃(무한 대기 방지)
+    timeout-minutes: 30
 
     steps:
-      # 1) 코드 체크아웃
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2) JDK 17 설치
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # 3) Android SDK 설치
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
 
-      # 4) 필수 SDK 패키지 + 시스템 이미지 설치 (PlayStore 미포함 google_apis / x86_64)
       - name: Install SDK packages
         run: |
           sdkmanager --install "platform-tools" "platforms;android-30" "emulator" \
             "system-images;android-30;google_apis;x86_64"
 
-      # 5) AVD 생성
       - name: Create AVD
         run: |
           echo "no" | avdmanager create avd -n test -k "system-images;android-30;google_apis;x86_64"
 
-      # 6) 에뮬레이터 실행 (헤드리스 + SwiftShader 소프트웨어 렌더링 + 가속 OFF)
+      # 에뮬레이터 실행 (헤드리스+SwiftShader). PID 저장해두고, 실패 시 강제 kill
       - name: Start emulator (headless)
         run: |
+          set -e
           nohup $ANDROID_HOME/emulator/emulator-headless -avd test \
             -no-window -no-audio -no-boot-anim -no-snapshot \
             -gpu swiftshader_indirect -accel off \
             -verbose > emulator.log 2>&1 &
+          echo $! > emulator.pid
 
-      # 7) 부팅 완료 대기 (정확히 5분 하드 타임아웃; 워치독 + timeout 이중 안전장치)
-      - name: Wait for emulator (max 5 minutes, hard kill)
+      # ★ 5분 하드 타임아웃: adb 대기 + sys.boot_completed 확인을 하나의 timeout 블록으로 감싼다
+      - name: Wait for emulator (≤5m hard timeout)
         shell: bash
         run: |
-          set +e
-
-          # ADB 서버 정리/시작
-          adb kill-server || true
-          adb start-server
-
-          # 5분 뒤 무조건 끊는 워치독(에뮬레이터 kill + 124코드 반환)
-          (
-            sleep 300
-            echo "::error::Emulator boot timed out (300s). Forcing kill..."
-            SERIAL="$(adb devices | awk '/emulator-/{print $1; exit}')"
-            if [ -n "$SERIAL" ]; then
-              adb -s "$SERIAL" emu kill || true
-            fi
-            pkill -9 -f "emulator.*-avd test" || true
-            exit 124
-          ) & WATCHDOG_PID=$!
-
-          # ADB 연결 가능까지
-          adb wait-for-device
-
-          # 완전 부팅 신호(sys.boot_completed=1) 대기 (timeout 300s)
-          timeout --foreground -k 10s 300 bash -c '
-            until [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" == "1" ]]; do
+          set -euo pipefail
+          # 전체 대기를 하나의 timeout 블록으로 감싸서 반드시 300초에 종료되게 한다
+          if ! timeout --foreground -k 10s 300 bash -c '
+            adb kill-server || true
+            adb start-server
+            adb wait-for-device
+            # 완전 부팅 대기
+            until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do
               sleep 2
             done
-          '
-          BOOT_RC=$?
-
-          # 워치독 종료(정상 부팅 시)
-          kill $WATCHDOG_PID 2>/dev/null || true
-          wait $WATCHDOG_PID 2>/dev/null || true
-
-          # 부팅 실패 처리
-          if [ $BOOT_RC -ne 0 ]; then
-            echo "::error::Emulator failed to report sys.boot_completed=1 within 300s."
-            exit $BOOT_RC
+            # 화면 잠금 해제 + 애니메이션 off
+            adb shell input keyevent 82 || true
+            adb shell settings put global window_animation_scale 0.0 || true
+            adb shell settings put global transition_animation_scale 0.0 || true
+            adb shell settings put global animator_duration_scale 0.0 || true
+          '; then
+            echo "::error::Emulator failed to boot within 300s. Killing emulator..."
+            # 에뮬레이터 강제 종료
+            if [ -f emulator.pid ]; then
+              kill -9 "$(cat emulator.pid)" 2>/dev/null || true
+            fi
+            pkill -9 -f "emulator.*-avd test" 2>/dev/null || true
+            exit 124
           fi
 
-          # 화면 잠금 해제 + 애니메이션 OFF(안정화)
-          adb shell input keyevent 82 || true
-          adb shell settings put global window_animation_scale 0.0 || true
-          adb shell settings put global transition_animation_scale 0.0 || true
-          adb shell settings put global animator_duration_scale 0.0 || true
-
-      # 8) Node + Appium + UiAutomator2 드라이버 설치
       - name: Install Node & Appium
         run: |
           sudo apt-get update
@@ -102,22 +78,20 @@ jobs:
           npm install -g appium@next
           appium driver install uiautomator2
 
-      # 9) Appium 서버 백그라운드 실행
       - name: Start Appium server
         run: |
           nohup appium > appium.log 2>&1 &
 
-      # 10) Gradle 실행 권한
       - name: Gradle permission
         run: chmod +x gradlew
 
-      # 11) 특정 테스트 클래스만 실행 (BasicAppiumTest_emul)
+      # 네가 지정한 단일 클래스만 실행
       - name: Run only BasicAppiumTest_emul
         run: |
           ./gradlew clean test --tests "com.example.appium.BasicAppiumTest_emul" --stacktrace | tee gradle.log
 
-      # 12) 디버그 스냅샷(ADB/props) 수집
-      - name: Snapshot props & devices (debug)
+      # 디버그/로그 수집 (항상 실행)
+      - name: Collect debug snapshots
         if: always()
         run: |
           mkdir -p ci-logs
@@ -125,23 +99,12 @@ jobs:
           adb shell getprop > ci-logs/getprop.txt 2>&1 || true
           adb shell getprop sys.boot_completed > ci-logs/prop-boot-completed.txt 2>&1 || true
           adb shell getprop dev.bootcomplete > ci-logs/prop-dev-bootcomplete.txt 2>&1 || true
-
-      # 13) 로그/리포트 아티팩트 업로드 (항상)
-      - name: Collect & upload artifacts
-        if: always()
-        run: |
-          mkdir -p ci-logs
           cp -f emulator.log ci-logs/emulator.log 2>/dev/null || true
           cp -f appium.log ci-logs/appium.log 2>/dev/null || true
           cp -f gradle.log ci-logs/gradle.log 2>/dev/null || true
           adb logcat -d > ci-logs/logcat.txt 2>&1 || true
-          if [ -d "build/reports/tests/test" ]; then
-            tar -czf ci-logs/test-report.tgz build/reports/tests/test
-          fi
-          if [ -d "build/test-results/test" ]; then
-            tar -czf ci-logs/test-results.tgz build/test-results/test
-          fi
-        shell: bash
+          if [ -d "build/reports/tests/test" ]; then tar -czf ci-logs/test-report.tgz build/reports/tests/test; fi
+          if [ -d "build/test-results/test" ]; then tar -czf ci-logs/test-results.tgz build/test-results/test; fi
 
       - name: Upload artifacts
         if: always()
