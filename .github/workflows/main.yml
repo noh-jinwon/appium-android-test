@@ -33,7 +33,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       # 5) 에뮬레이터 기동 + 같은 스텝의 script에서 Appium/Gradle 테스트 실행
-      #    종료(post) 타이밍에 ADB가 먼저 내려가면 step이 실패로 잡힐 수 있으므로 best-effort로 처리
+      #    종료(post) 타이밍의 ADB 에러를 전체 실패로 보지 않기 위해 best‑effort 처리
       - name: Start emulator & run tests
         continue-on-error: true
         uses: ReactiveCircus/android-emulator-runner@v2
@@ -42,7 +42,7 @@ jobs:
           target: google_apis         # PlayStore 미포함
           arch: x86_64
           profile: pixel_4            # 선택 사항
-          disable-animations: true    # 애니메이션은 액션에 맡김 (수동 settings 호출 제거)
+          disable-animations: false   # ← 액션 내부 settings 호출 비활성화(중요)
           emulator-options: >-
             -no-window -gpu swiftshader_indirect
             -no-snapshot -no-audio -no-boot-anim
@@ -54,28 +54,39 @@ jobs:
             until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do
               sleep 2
             done
-            adb shell input keyevent 82 || true  # 잠금 해제
-            # (중요) 아래와 같은 수동 settings 호출은 모두 제거했습니다:
-            #   adb shell settings put global window_animation_scale 0.0  등
 
-            # (B) Appium 2 + uiautomator2 설치 및 서버 기동
+            # (B) 잠금 해제 (안정화)
+            adb shell input keyevent 82 || true
+
+            # (C) 애니메이션 OFF - 서비스 준비 지연을 고려해 재시도 루프 적용
+            for k in window_animation_scale transition_animation_scale animator_duration_scale; do
+              n=0
+              until adb shell settings put global "$k" 0.0 >/dev/null 2>&1 || [ $n -ge 10 ]; do
+                n=$((n+1))
+                sleep 1
+              done
+            done
+            # 화면 항상 켜짐(전원 연결 시) — 필수 아님, 실패해도 무시
+            adb shell settings put global stay_on_while_plugged_in 3 || true
+
+            # (D) Appium 2 + uiautomator2 설치 및 서버 기동
             npm install -g appium@next
             appium driver install uiautomator2
             nohup appium > appium.log 2>&1 &
 
-            # (C) Gradle 실행 권한 및 버전 확인(선택)
+            # (E) Gradle 실행 권한 및 버전 확인(선택)
             chmod +x ./gradlew
             java -version || true
             adb --version || true
             node -v || true
             npm -v || true
 
-            # (D) 특정 테스트 클래스만 실행
+            # (F) 특정 테스트 클래스만 실행
             ./gradlew clean test \
               --tests "com.example.appium.BasicAppiumTest_emul" \
               --stacktrace | tee gradle.log
 
-            # (E) 로그/리포트 수집 (아티팩트로 올릴 파일만 정리)
+            # (G) 로그/리포트 수집 (아티팩트로 올릴 파일만 정리)
             mkdir -p ci-logs
             cp -f gradle.log ci-logs/gradle.log || true
             cp -f appium.log ci-logs/appium.log || true
