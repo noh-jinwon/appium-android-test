@@ -1,4 +1,4 @@
-name: Android Appium CI (stable)
+name: Android Appium CI (stable-5min-timeout)
 
 on:
   push:
@@ -8,31 +8,36 @@ on:
 jobs:
   appium-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # 전체 잡 타임아웃
+    timeout-minutes: 30    # 전체 잡 타임아웃(무한 대기 방지)
 
     steps:
+      # 1) 코드 체크아웃
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2) JDK 17 설치
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
+      # 3) Android SDK 설치
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
 
-      # 필수 SDK 컴포넌트 & system image (PlayStore 미포함 google_apis, x86_64)
+      # 4) 필수 SDK 패키지 + 시스템 이미지 설치 (PlayStore 미포함 google_apis / x86_64)
       - name: Install SDK packages
         run: |
           sdkmanager --install "platform-tools" "platforms;android-30" "emulator" \
             "system-images;android-30;google_apis;x86_64"
 
+      # 5) AVD 생성
       - name: Create AVD
-        run: echo "no" | avdmanager create avd -n test -k "system-images;android-30;google_apis;x86_64"
+        run: |
+          echo "no" | avdmanager create avd -n test -k "system-images;android-30;google_apis;x86_64"
 
-      # 헤드리스 + SwiftShader(소프트웨어 렌더러) + no-snapshot + verbose 로그
+      # 6) 에뮬레이터 실행 (헤드리스 + SwiftShader 소프트웨어 렌더링 + 가속 OFF)
       - name: Start emulator (headless)
         run: |
           nohup $ANDROID_HOME/emulator/emulator-headless -avd test \
@@ -40,21 +45,56 @@ jobs:
             -gpu swiftshader_indirect -accel off \
             -verbose > emulator.log 2>&1 &
 
-      # 부팅 완료 대기 (정확히 5분 타임아웃). 부팅 신호는 sys.boot_completed=1
-      - name: Wait for emulator (max 5 minutes)
+      # 7) 부팅 완료 대기 (정확히 5분 하드 타임아웃; 워치독 + timeout 이중 안전장치)
+      - name: Wait for emulator (max 5 minutes, hard kill)
         shell: bash
         run: |
-          set -e
+          set +e
+
+          # ADB 서버 정리/시작
+          adb kill-server || true
+          adb start-server
+
+          # 5분 뒤 무조건 끊는 워치독(에뮬레이터 kill + 124코드 반환)
+          (
+            sleep 300
+            echo "::error::Emulator boot timed out (300s). Forcing kill..."
+            SERIAL="$(adb devices | awk '/emulator-/{print $1; exit}')"
+            if [ -n "$SERIAL" ]; then
+              adb -s "$SERIAL" emu kill || true
+            fi
+            pkill -9 -f "emulator.*-avd test" || true
+            exit 124
+          ) & WATCHDOG_PID=$!
+
+          # ADB 연결 가능까지
           adb wait-for-device
-          # 최대 300초(5분) 동안 sys.boot_completed == 1 기다리기
-          timeout 300 bash -c 'until [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" == "1" ]]; do sleep 2; done'
-          # 잠금 해제 및 애니메이션 끄기(안정성)
+
+          # 완전 부팅 신호(sys.boot_completed=1) 대기 (timeout 300s)
+          timeout --foreground -k 10s 300 bash -c '
+            until [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" == "1" ]]; do
+              sleep 2
+            done
+          '
+          BOOT_RC=$?
+
+          # 워치독 종료(정상 부팅 시)
+          kill $WATCHDOG_PID 2>/dev/null || true
+          wait $WATCHDOG_PID 2>/dev/null || true
+
+          # 부팅 실패 처리
+          if [ $BOOT_RC -ne 0 ]; then
+            echo "::error::Emulator failed to report sys.boot_completed=1 within 300s."
+            exit $BOOT_RC
+          fi
+
+          # 화면 잠금 해제 + 애니메이션 OFF(안정화)
           adb shell input keyevent 82 || true
           adb shell settings put global window_animation_scale 0.0 || true
           adb shell settings put global transition_animation_scale 0.0 || true
           adb shell settings put global animator_duration_scale 0.0 || true
 
-      # Node + Appium + uiautomator2
+      # 8) Node + Appium + UiAutomator2 드라이버 설치
       - name: Install Node & Appium
         run: |
           sudo apt-get update
@@ -62,30 +102,32 @@ jobs:
           npm install -g appium@next
           appium driver install uiautomator2
 
+      # 9) Appium 서버 백그라운드 실행
       - name: Start Appium server
         run: |
           nohup appium > appium.log 2>&1 &
 
+      # 10) Gradle 실행 권한
       - name: Gradle permission
         run: chmod +x gradlew
 
-      # 네가 지정한 단일 클래스만 실행
-      - name: Run BasicAppiumTest_emul only
+      # 11) 특정 테스트 클래스만 실행 (BasicAppiumTest_emul)
+      - name: Run only BasicAppiumTest_emul
         run: |
           ./gradlew clean test --tests "com.example.appium.BasicAppiumTest_emul" --stacktrace | tee gradle.log
 
-      # ---- 디버그 & 로그 수집 (항상) ----
+      # 12) 디버그 스냅샷(ADB/props) 수집
       - name: Snapshot props & devices (debug)
         if: always()
         run: |
           mkdir -p ci-logs
           adb devices -l > ci-logs/adb-devices.txt 2>&1 || true
           adb shell getprop > ci-logs/getprop.txt 2>&1 || true
-          # 부팅 진단용 대표 프로퍼티
           adb shell getprop sys.boot_completed > ci-logs/prop-boot-completed.txt 2>&1 || true
           adb shell getprop dev.bootcomplete > ci-logs/prop-dev-bootcomplete.txt 2>&1 || true
 
-      - name: Collect logs (emulator/appium/gradle/test reports)
+      # 13) 로그/리포트 아티팩트 업로드 (항상)
+      - name: Collect & upload artifacts
         if: always()
         run: |
           mkdir -p ci-logs
@@ -99,6 +141,7 @@ jobs:
           if [ -d "build/test-results/test" ]; then
             tar -czf ci-logs/test-results.tgz build/test-results/test
           fi
+        shell: bash
 
       - name: Upload artifacts
         if: always()
